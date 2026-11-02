@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -63,6 +64,33 @@ namespace {
     // `device` so Chromium's GPU process can be pinned to the same adapter Skyrim
     // renders on (use-adapter-luid). Returns an empty string when the adapter LUID
     // cannot be resolved, leaving CEF on its default GPU selection.
+    // PrismaUI/lean.txt (optional): one setting a line, "#" starts a comment. "max-fps=N" caps the page's frame
+    // rate (0 = every game frame); "--name[=value]" adds a Chromium switch; "!name" drops a built-in lean switch.
+    std::vector<std::string> ReadLeanFile(const std::filesystem::path& path, int& maxFps) {
+        std::vector<std::string> overrides;
+        std::ifstream file(path);
+        std::string line;
+        while (std::getline(file, line)) {
+            if (const auto hash = line.find('#'); hash != std::string::npos) {
+                line.erase(hash);
+            }
+            const auto first = line.find_first_not_of(" \t\r");
+            const auto last = line.find_last_not_of(" \t\r");
+            if (first == std::string::npos) {
+                continue;
+            }
+            line = line.substr(first, last - first + 1);
+            if (line.starts_with("max-fps=")) {
+                maxFps = std::max(0, std::atoi(line.c_str() + 8));
+            } else if (line.starts_with("--") || line.starts_with("!")) {
+                overrides.push_back(line);
+            } else {
+                logger::warn("lean.txt: line not understood: {}", line);
+            }
+        }
+        return overrides;
+    }
+
     std::string BuildAdapterLuidSwitch(ID3D11Device* device) {
         if (!device) {
             logger::warn("CEF GPU adapter not pinned: render device is null.");
@@ -259,6 +287,11 @@ namespace PrismaUI::Cef {
         uint32_t width = 0;
         uint32_t height = 0;
         HWND hwnd = nullptr;
+        // Lean build: the page draws at most maxFps frames a second, whatever the game runs at (0 = every game
+        // frame). Render thread only.
+        int maxFps = 60;
+        mutable double frameCredit = 2.0;
+        mutable std::chrono::steady_clock::time_point lastFrameAt{};
         mutable std::mutex devToolsMutex;
         CefRefPtr<CefClient> devToolsClient;
         CefRefPtr<CefBrowser> devToolsBrowser;
@@ -366,7 +399,12 @@ namespace PrismaUI::Cef {
         CefString(&settings.log_file).FromWString(logFile.wstring());
         CefString(&settings.locale).FromASCII("en-US");
 
-        _impl->app = CreatePrismaCefApp(BuildAdapterLuidSwitch(renderDevice));
+        auto leanOverrides = ReadLeanFile(basePath / "lean.txt", _impl->maxFps);
+        logger::info("Lean build: page frame cap {} fps, {} line(s) from lean.txt", _impl->maxFps, leanOverrides.size());
+        for (const auto& line : leanOverrides) {
+            logger::info("lean.txt: {}", line);
+        }
+        _impl->app = CreatePrismaCefApp(BuildAdapterLuidSwitch(renderDevice), std::move(leanOverrides));
         logger::info("Calling CefInitialize.");
         if (!CefInitialize(mainArgs, settings, _impl->app, nullptr)) {
             auto errorCode = CefGetExitCode();
@@ -454,6 +492,21 @@ namespace PrismaUI::Cef {
 
         if (!client || !client->HasBrowser()) {
             return;
+        }
+
+        if (_impl->maxFps > 0) {
+            // A frame's worth of credit per 1/maxFps of game time; kept up to 2 so a game frame that comes a little
+            // early at the same rate still draws.
+            const auto now = std::chrono::steady_clock::now();
+            if (_impl->lastFrameAt != std::chrono::steady_clock::time_point{}) {
+                const double elapsed = std::chrono::duration<double>(now - _impl->lastFrameAt).count();
+                _impl->frameCredit = std::min(2.0, _impl->frameCredit + elapsed * _impl->maxFps);
+            }
+            _impl->lastFrameAt = now;
+            if (_impl->frameCredit < 1.0) {
+                return;
+            }
+            _impl->frameCredit -= 1.0;
         }
 
         PostToCefUi([client] { client->SendExternalBeginFrame(); });

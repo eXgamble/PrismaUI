@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "Cef/Subprocess/PrismaCefRenderApp.h"
 #include "include/cef_app.h"
@@ -8,7 +9,7 @@
 namespace PrismaUI::Cef {
     class PrismaCefApp final : public CefApp {
     public:
-        explicit PrismaCefApp(std::string adapterLuidValue = {});
+        explicit PrismaCefApp(std::string adapterLuidValue = {}, std::vector<std::string> leanOverrides = {});
         void OnBeforeCommandLineProcessing(const CefString& process_type,
                                            CefRefPtr<CefCommandLine> command_line) override;
         CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override;
@@ -18,9 +19,11 @@ namespace PrismaUI::Cef {
         // "<HighPart>,<LowPart>" decimal LUID forwarded to Chromium's GPU process via
         // the use-adapter-luid switch; empty when no specific adapter must be forced.
         std::string adapterLuidValue_;
+        // Lines from PrismaUI/lean.txt: "--name[=value]" adds a Chromium switch, "!name" drops a built-in one.
+        std::vector<std::string> leanOverrides_;
 
         IMPLEMENT_REFCOUNTING(PrismaCefApp);
     };
 
-    CefRefPtr<CefApp> CreatePrismaCefApp(std::string adapterLuidValue = {});
+    CefRefPtr<CefApp> CreatePrismaCefApp(std::string adapterLuidValue = {}, std::vector<std::string> leanOverrides = {});
 }

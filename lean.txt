@@ -1,0 +1,5 @@
+# Lean Prisma settings, one a line ("#" starts a comment):
+#   max-fps=N        the page draws at most N frames a second (0 = every game frame)
+#   --name[=value]   adds a Chromium switch
+#   !name            drops one of the built-in lean switches (see src/Cef/Subprocess/PrismaCefApp.cpp)
+max-fps=60

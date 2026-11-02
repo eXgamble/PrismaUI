@@ -1,17 +1,81 @@
 #include "Cef/Subprocess/PrismaCefApp.h"
 
+#include <algorithm>
+#include <string_view>
 #include <utility>
 
 #include "Cef/Subprocess/PrismaCefRenderApp.h"
 #include "include/cef_command_line.h"
 
 namespace PrismaUI::Cef {
-    PrismaCefApp::PrismaCefApp(std::string adapterLuidValue)
-        : renderHandler_(new PrismaCefRenderApp()), adapterLuidValue_(std::move(adapterLuidValue)) {}
+    namespace {
+        // Lean build: Chromium parts a game HUD never uses, so they never start a process, a thread or a timer.
+        // Each one can be dropped again with "!name" in PrismaUI/lean.txt.
+        struct LeanSwitch {
+            std::string_view name;
+            std::string_view value;
+        };
+        constexpr LeanSwitch kLeanSwitches[] = {
+            {"disable-extensions", {}},
+            {"disable-component-update", {}},
+            {"disable-background-networking", {}},
+            {"disable-spell-checking", {}},
+            {"disable-print-preview", {}},
+            {"disable-default-apps", {}},
+            {"no-first-run", {}},
+            {"no-pings", {}},
+            {"disable-domain-reliability", {}},
+            {"disable-breakpad", {}},
+            {"disable-site-isolation-trials", {}},
+            {"renderer-process-limit", "1"},
+            // GPU raster without multisampling: less GPU memory per tile
+            {"gpu-rasterization-msaa-sample-count", "0"},
+            {"disable-features",
+             "Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,GlobalMediaControls,"
+             "HardwareMediaKeyHandling,AutofillServerCommunication,CalculateNativeWinOcclusion,BackForwardCache,"
+             "IsolateOrigins,site-per-process,SpareRendererForSitePerProcess"},
+            {"enable-features", "NetworkServiceInProcess2"},
+        };
+    }
 
-    void PrismaCefApp::OnBeforeCommandLineProcessing(const CefString&, CefRefPtr<CefCommandLine> command_line) {
+    PrismaCefApp::PrismaCefApp(std::string adapterLuidValue, std::vector<std::string> leanOverrides)
+        : renderHandler_(new PrismaCefRenderApp()), adapterLuidValue_(std::move(adapterLuidValue)),
+          leanOverrides_(std::move(leanOverrides)) {}
+
+    void PrismaCefApp::OnBeforeCommandLineProcessing(const CefString& process_type,
+                                                     CefRefPtr<CefCommandLine> command_line) {
         if (!command_line) {
             return;
+        }
+
+        // Browser process only (empty type): Chromium hands what its children need on to them.
+        if (process_type.empty()) {
+            const auto dropped = [this](std::string_view name) {
+                return std::ranges::any_of(leanOverrides_, [name](const std::string& line) {
+                    return line.size() == name.size() + 1 && line[0] == '!' && std::string_view(line).substr(1) == name;
+                });
+            };
+            for (const auto& lean : kLeanSwitches) {
+                if (dropped(lean.name)) {
+                    continue;
+                }
+                if (lean.value.empty()) {
+                    command_line->AppendSwitch(std::string(lean.name));
+                } else {
+                    command_line->AppendSwitchWithValue(std::string(lean.name), std::string(lean.value));
+                }
+            }
+            for (const auto& line : leanOverrides_) {
+                if (!line.starts_with("--")) {
+                    continue;
+                }
+                const auto equals = line.find('=');
+                if (equals == std::string::npos) {
+                    command_line->AppendSwitch(line.substr(2));
+                } else {
+                    command_line->AppendSwitchWithValue(line.substr(2, equals - 2), line.substr(equals + 1));
+                }
+            }
         }
 
         // CEF/Chromium M138+ auto de-elevates when launched as admin: it relaunches the main
@@ -39,7 +103,7 @@ namespace PrismaUI::Cef {
 
     CefRefPtr<CefRenderProcessHandler> PrismaCefApp::GetRenderProcessHandler() { return renderHandler_; }
 
-    CefRefPtr<CefApp> CreatePrismaCefApp(std::string adapterLuidValue) {
-        return new PrismaCefApp(std::move(adapterLuidValue));
+    CefRefPtr<CefApp> CreatePrismaCefApp(std::string adapterLuidValue, std::vector<std::string> leanOverrides) {
+        return new PrismaCefApp(std::move(adapterLuidValue), std::move(leanOverrides));
     }
 }
